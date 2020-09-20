@@ -106,6 +106,11 @@ void interactiveShowData(void) {
     uint64_t now = mstime();
     char progress;
     char spinner[4] = "|/-\\";
+    int count = 0;
+    int valid = 0;
+	double signalMax = -100.0;
+	double signalMin = +100.0;
+	double signalMean = 0.0;
 
     if (!Modes.interactive)
         return;
@@ -116,16 +121,18 @@ void interactiveShowData(void) {
 
     next_update = now + MODES_INTERACTIVE_REFRESH_TIME;
 
-    mvprintw(0, 0, " Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   RSSI  Msgs  Ti");
-    mvhline(1, 0, ACS_HLINE, 80);
+    mvprintw(1, 0, " Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   RSSI  Msgs  Ti", Modes.stats_current.unique_aircraft);
+    mvhline(2, 0, ACS_HLINE, 80);
 
     progress = spinner[(now/1000)%4];
     mvaddch(0, 79, progress);
 
     int rows = getmaxy(stdscr);
-    int row = 2;
+    int row = 3;
 
-    while (a && row < rows) {
+    while (a) {
+        count++;
+
         if (a->reliable && (now - a->seen) < Modes.interactive_display_ttl) {
             char strSquawk[5] = " ";
             char strFl[7]     = " ";
@@ -133,6 +140,7 @@ void interactiveShowData(void) {
             char strGs[5]     = " ";
             int msgs  = a->messages;
 
+			valid++;
             if (trackDataValid(&a->squawk_valid)) {
                 snprintf(strSquawk,5,"%04x", a->squawk);
             }
@@ -173,21 +181,33 @@ void interactiveShowData(void) {
             }
 
             if (trackDataValid(&a->airground_valid) && a->airground == AG_GROUND) {
-                snprintf(strFl, 7," grnd");
+                snprintf(strFl, 7,"grnd ");
             } else if (Modes.use_gnss && trackDataValid(&a->altitude_geom_valid)) {
                 snprintf(strFl, 7, "%5dH", convert_altitude(a->altitude_geom));
             } else if (trackDataValid(&a->altitude_baro_valid)) {
                 snprintf(strFl, 7, "%5d ", convert_altitude(a->altitude_baro));
             }
+            double signalDisplay = 10.0 * log10(signalAverage);
 
-            mvprintw(row, 0, "%s%06X %-4s  %-4s  %-8s %6s %3s  %3s  %7s %8s %5.1f %5d %2.0f",
+			if (row < rows) {
+				mvprintw(row, 0, "%s%06X %-4s  %-4s  %-8s %6s %3s  %3s  %7s %8s %5.1f %5d %2.0f",
                      (a->addr & MODES_NON_ICAO_ADDRESS) ? "~" : " ", (a->addr & 0xffffff),
                      strMode, strSquawk, a->callsign, strFl, strGs, strTt,
-                     strLat, strLon, 10 * log10(signalAverage), msgs, (now - a->seen)/1000.0);
-            ++row;
+                     strLat, strLon, signalDisplay, msgs, (now - a->seen)/1000.0);
+				++row;
+			}
+            if (signalDisplay > signalMax) {
+				signalMax = signalDisplay;
+			}
+            if (signalDisplay < signalMin) {
+				signalMin = signalDisplay;
+			}
+			signalMean += signalDisplay;
+
         }
         a = a->next;
     }
+
 
     if (Modes.mode_ac) {
         for (unsigned i = 1; i < 4096 && row < rows; ++i) {
@@ -220,9 +240,14 @@ void interactiveShowData(void) {
             ++row;
         }
     }
-
     move(row, 0);
     clrtobot();
+
+    mvprintw(0, 0, " Total: %3d Valid: %3d Shown: %3d RSSI: Max %5.1f Mean %5.1f Min %5.1f",
+		count, valid, rows < valid ? rows : valid, signalMax, signalMean / valid, signalMin);
+
+    move(0, 0);
+
     refresh();
 }
 
