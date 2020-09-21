@@ -321,4 +321,11 @@ static inline unsigned indexToModeA(unsigned index)
     return (index & 0007) | ((index & 0070) << 1) | ((index & 0700) << 2) | ((index & 07000) << 3);
 }
 
+/* Great Circle distance in m */
+double greatcircle(double lat0, double lon0, double lat1, double lon1);
+
+/* Get bearing from 2 points */
+double get_bearing(double lat0, double lon0, double lat1, double lon1);
+
+
 #endif

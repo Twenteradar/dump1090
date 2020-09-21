@@ -78,8 +78,24 @@ static int convert_speed(int kts)
 //
 
 void interactiveInit() {
-    if (!Modes.interactive)
+    if (!Modes.interactive) {
         return;
+    }
+
+    switch(Modes.interactive_distance_units) {
+    case UNIT_NAUTICAL_MILES:
+        Modes.interactive_distance_units_conversion = 0.53996;
+        Modes.interactive_distance_units_suffix = "nm";
+        break;
+    case UNIT_STATUTE_MILES:
+        Modes.interactive_distance_units_conversion = 0.621371;
+        Modes.interactive_distance_units_suffix = "sm";
+        break;
+    case UNIT_KILOMETERS:
+        Modes.interactive_distance_units_conversion = 1.0;
+        Modes.interactive_distance_units_suffix = "km";
+        break;
+    }
 
     initscr();
     clear();
@@ -106,6 +122,11 @@ void interactiveShowData(void) {
     uint64_t now = mstime();
     char progress;
     char spinner[4] = "|/-\\";
+    int valid = 0;
+    double signalMax = -100.0;
+    double signalMin = +100.0;
+    double signalMean = 0.0;
+    double distanceMax = 0.0;
 
     if (!Modes.interactive)
         return;
@@ -116,16 +137,26 @@ void interactiveShowData(void) {
 
     next_update = now + MODES_INTERACTIVE_REFRESH_TIME;
 
-    mvprintw(0, 0, " Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   RSSI  Msgs  Ti");
-    mvhline(1, 0, ACS_HLINE, 80);
+    if (Modes.interactive_show_distance) {
+        mvprintw(1, 0, " Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg  Dist(%s) Bearing  RSSI  Msgs  Ti",
+            Modes.interactive_distance_units_suffix);
+    } else {
+        mvprintw(1, 0, " Hex    Mode  Sqwk  Flight   Alt    Spd  Hdg    Lat      Long   RSSI  Msgs  Ti");
+    }
+
+    mvhline(2, 0, ACS_HLINE, 80);
 
     progress = spinner[(now/1000)%4];
     mvaddch(0, 79, progress);
 
     int rows = getmaxy(stdscr);
-    int row = 2;
+    int row = 3;
+    int rowMaxd = 0;
+    int rowMaxRSSI = 0;
+    int rowMinRSSI = 0;
 
-    while (a && row < rows) {
+    while (a) {
+
         if (a->reliable && (now - a->seen) < Modes.interactive_display_ttl) {
             char strSquawk[5] = " ";
             char strFl[7]     = " ";
@@ -133,6 +164,7 @@ void interactiveShowData(void) {
             char strGs[5]     = " ";
             int msgs  = a->messages;
 
+            valid++;
             if (trackDataValid(&a->squawk_valid)) {
                 snprintf(strSquawk,5,"%04x", a->squawk);
             }
@@ -173,21 +205,67 @@ void interactiveShowData(void) {
             }
 
             if (trackDataValid(&a->airground_valid) && a->airground == AG_GROUND) {
-                snprintf(strFl, 7," grnd");
+                snprintf(strFl, 7,"grnd ");
             } else if (Modes.use_gnss && trackDataValid(&a->altitude_geom_valid)) {
                 snprintf(strFl, 7, "%5dH", convert_altitude(a->altitude_geom));
             } else if (trackDataValid(&a->altitude_baro_valid)) {
                 snprintf(strFl, 7, "%5d ", convert_altitude(a->altitude_baro));
             }
+            double signalDisplay = 10.0 * log10(signalAverage);
 
-            mvprintw(row, 0, "%s%06X %-4s  %-4s  %-8s %6s %3s  %3s  %7s %8s %5.1f %5d %2.0f",
+            double distance = 0.0;
+            char strDistance[8]           = " ";
+            double bearing = 0.0;
+            char strBearing[9]           = " ";
+
+            if ((Modes.bUserFlags & MODES_USER_LATLON_VALID) && trackDataValid(&a->position_valid)) {
+                distance = greatcircle(Modes.fUserLat, Modes.fUserLon,
+                    a->lat, a->lon);
+
+                distance /= 1000.0;
+
+                distance *= Modes.interactive_distance_units_conversion;
+                if (distance > distanceMax) {
+                    distanceMax = distance;
+                }
+                snprintf(strDistance, 8, "%5.1f ", distance);
+                bearing = get_bearing(Modes.fUserLat, Modes.fUserLon, a->lat, a->lon);
+                snprintf(strBearing, 9, "%5.0f ", bearing);
+            }
+
+            if (signalDisplay > signalMax) {
+                signalMax = signalDisplay;
+            }
+            if (signalDisplay < signalMin) {
+                signalMin = signalDisplay;
+            }
+            signalMean += signalDisplay;
+
+            if (row < rows) {
+                mvprintw(row, 0, "%s%06X %-4s  %-4s  %-8s %6s %3s  %3s  %7s %8s %5.1f %5d %2.0f",
                      (a->addr & MODES_NON_ICAO_ADDRESS) ? "~" : " ", (a->addr & 0xffffff),
                      strMode, strSquawk, a->callsign, strFl, strGs, strTt,
-                     strLat, strLon, 10 * log10(signalAverage), msgs, (now - a->seen)/1000.0);
-            ++row;
+                     Modes.interactive_show_distance ? strDistance : strLat,
+                     Modes.interactive_show_distance ? strBearing : strLon,
+                     signalDisplay, msgs, (now - a->seen)/1000.0);
+
+                if (signalDisplay >= signalMax) {
+                    rowMaxRSSI = row;
+                }
+                if (signalDisplay <= signalMin) {
+                    rowMinRSSI = row;
+                }
+                if (distance >= distanceMax) {
+                    rowMaxd = row;
+                }
+
+                ++row;
+            }
+
         }
         a = a->next;
     }
+
 
     if (Modes.mode_ac) {
         for (unsigned i = 1; i < 4096 && row < rows; ++i) {
@@ -202,6 +280,7 @@ void interactiveShowData(void) {
                 strMode[3] = 'C';
                 snprintf(strFl, 7, "%5d ", convert_altitude(modeC * 100));
             }
+            valid++;
 
             mvprintw(row, 0,
                      "%7s %-4s  %04x  %-8s %6s %3s  %3s  %7s %8s %5s %5d %2d\n",
@@ -221,8 +300,24 @@ void interactiveShowData(void) {
         }
     }
 
-    move(row, 0);
-    clrtobot();
+    if (rowMaxd > 3 && Modes.interactive_show_distance) {
+        mvprintw(rowMaxd, 52, "^");
+    }
+
+    mvprintw(rowMaxd, 52, "+");
+    mvprintw(rowMaxRSSI, 68, "+");
+    mvprintw(rowMinRSSI, 68, "-");
+
+    mvprintw(0, 0, " Tot: %3d Vis: %3d RSSI: Max %5.1f+ Mean %5.1f Min %5.1f-  MaxD: %6.1f%s+ ",
+		valid, (rows-3) < valid ? (rows-3) : valid, signalMax, signalMean / valid, signalMin, distanceMax,
+			Modes.interactive_distance_units_suffix);
+
+    if (row < rows) {
+        move(row, 0);
+        clrtobot();
+    }
+    move(0, 0);
+
     refresh();
 }
 
