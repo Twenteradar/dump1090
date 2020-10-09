@@ -33,6 +33,9 @@
 #ifdef ENABLE_LIMESDR
 #  include "sdr_limesdr.h"
 #endif
+#ifdef ENABLE_AIRSPY
+#  include "sdr_airspy.h"
+#endif
 
 typedef struct {
     const char *name;
@@ -96,6 +99,9 @@ static sdr_handler sdr_handlers[] = {
 #endif
 #ifdef ENABLE_LIMESDR
     { "limesdr", SDR_LIMESDR, limesdrInitConfig, limesdrShowHelp, limesdrHandleOption, limesdrOpen, limesdrRun, limesdrClose },
+#endif
+#ifdef ENABLE_AIRSPY
+    { "airspy", SDR_AIRSPY, airspyInitConfig, airspyShowHelp, airspyHandleOption, airspyOpen, airspyRun, airspyClose },
 #endif
 
     { "none", SDR_NONE, noInitConfig, noShowHelp, noHandleOption, noOpen, noRun, noClose },
