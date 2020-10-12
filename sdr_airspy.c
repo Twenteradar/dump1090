@@ -19,16 +19,39 @@
 
 #include "dump1090.h"
 #include "sdr_airspy.h"
+#include "fir.h"
 
 #include <libairspy/airspy.h>
+#include <libairspy/filters.h>
 #include <inttypes.h>
 
-#define CONVERTER_SAMPLE_TYPE INPUT_SC16
-#define AIRSPY_SAMPLE_TYPE AIRSPY_SAMPLE_INT16_IQ
-int sample_size = sizeof(int16_t) * 2;
 
-struct iq_sample {
-    int16_t sample[2];
+enum sample_setup_type {
+    SETUP_FLOAT32_IQ = 0,
+    SETUP_FLOAT32_REAL,
+    SETUP_INT16_IQ,
+    SETUP_INT16_REAL,
+    SETUP_UINT16_REAL,
+    SETUP_RAW,
+    SETUP_END
+};
+
+struct sample_setup {
+    enum sample_setup_type setup_type;
+    int airspy_sample_type;
+    int internal_converter;
+    int sample_rate_multiplier;
+    int functional;
+    char *name;
+};
+
+struct sample_setup sample_setups[] = {
+    { SETUP_FLOAT32_IQ, AIRSPY_SAMPLE_FLOAT32_IQ, INPUT_FLOAT32 , 2, 0, "FLOAT32_IQ" },
+    { SETUP_FLOAT32_REAL, AIRSPY_SAMPLE_FLOAT32_REAL, INPUT_FLOAT32, 1, 0, "FLOAT32_REAL" },
+    { SETUP_INT16_IQ, AIRSPY_SAMPLE_INT16_IQ, INPUT_SC16, 2, 1, "INT16_IQ" },
+    { SETUP_INT16_REAL, AIRSPY_SAMPLE_INT16_REAL, INPUT_INT16, 1, 1, "INT16_REAL" },
+    { SETUP_UINT16_REAL, AIRSPY_SAMPLE_UINT16_REAL, INPUT_UINT16, 1, 0, "UINT16_REAL" },
+    { SETUP_RAW, AIRSPY_SAMPLE_RAW, INPUT_UINT16, 1, 0, "UINT16_RAW" },
 };
 
 static struct {
@@ -48,10 +71,11 @@ static struct {
     int rf_bias;
     int packing;
     int samplerate;
+    uint32_t sample_ratio;
 
+    enum sample_setup_type sample_setup;
     iq_convert_fn converter;
     struct converter_state *converter_state;
-    enum airspy_sample_type sample_type;
 } AirSpy;
 
 void airspyInitConfig()
@@ -71,9 +95,10 @@ void airspyInitConfig()
     AirSpy.agcs_set = 0;
     AirSpy.rf_bias = 0;
     AirSpy.samplerate = 12000000;
+    AirSpy.sample_ratio = AirSpy.samplerate / 2400000;
     AirSpy.converter = NULL;
     AirSpy.converter_state = NULL;
-    AirSpy.sample_type = AIRSPY_SAMPLE_TYPE;
+    AirSpy.sample_setup = SETUP_INT16_IQ;
 }
 
 bool airspyHandleOption(int argc, char **argv, int *jptr)
@@ -122,6 +147,24 @@ bool airspyHandleOption(int argc, char **argv, int *jptr)
         AirSpy.preset_gains_set++;
     } else if (!strcmp(argv[j], "--sample-rate") && more) {
         AirSpy.samplerate = atoi(argv[++j]);
+    } else if (!strcmp(argv[j], "--sample-setup") && more) {
+        char *setup = argv[++j];
+        int found = 0;
+        for (int i = 0; i < SETUP_END; i++) {
+            if (strcasecmp(setup, sample_setups[i].name) == 0) {
+                if (!sample_setups[i].functional) {
+                    fprintf(stderr, "Error: --sample-setup '%s' is not functional yet\n", setup);
+                    return false;
+                }
+                AirSpy.sample_setup = i;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "Error: --sample-setup '%s' is not valid\n", setup);
+            return false;
+        }
     } else if (!strcmp(argv[j], "--enable-lna-agc")) {
         AirSpy.lna_agc = 1;
         AirSpy.agcs_set++;
@@ -156,7 +199,10 @@ void airspyShowHelp()
     printf("--sensitivity-gain <gain> set sensitivity gain presets (Range 0-21)\n");
     printf("                          emphasizes lna and mixer gains over vga gain\n");
     printf("                          mutually exclusive with all other gain settings\n");
+    printf("--sample-setup            set sample type.  one of\n");
+    printf("                          'float32_iq', 'float32_real', 'int16_iq', 'int16_real', 'uint16_real'\n");
     printf("--sample-rate             set sample rate in Hz (default 12000000 samples /sec\n");
+    printf("                          not all sample rates are support every sample-setup\n");
     printf("--enable-lna-agc          enable on lna agc\n");
     printf("--enable-mixer-agc        enable mixer agc\n");
     printf("--enable-packing          enable packing on the usb interface\n");
@@ -166,14 +212,17 @@ void airspyShowHelp()
 
 static void show_config()
 {
-    fprintf(stderr, "serial      : 0x%" PRIx64 "\n", AirSpy.serial);
-    fprintf(stderr, "freq        : %" PRIu64 "\n", AirSpy.freq);
-    fprintf(stderr, "sample-rate : %d\n", AirSpy.samplerate);
+    fprintf(stderr, "serial           : 0x%" PRIx64 "\n", AirSpy.serial);
+    fprintf(stderr, "freq             : %" PRIu64 "\n", AirSpy.freq);
+    fprintf(stderr, "sample-rate      : %d\n", AirSpy.samplerate);
+    fprintf(stderr, "downsample ratio : %d\n", AirSpy.sample_ratio);
+    fprintf(stderr, "sample-setup     : %s\n", sample_setups[AirSpy.sample_setup].name);
     fprintf(stderr, "\n");
     fprintf(stderr, "lna_gain         : %d %s\n", AirSpy.lna_gain, AirSpy.lna_gain < 0 ? "(not set)": "");
     fprintf(stderr, "mixer_gain       : %d %s\n", AirSpy.mixer_gain, AirSpy.mixer_gain < 0 ? "(not set)": "");
     fprintf(stderr, "vga_gain         : %d %s\n", AirSpy.vga_gain, AirSpy.vga_gain < 0 ? "(not set)": "");
-    fprintf(stderr, "linearity_gain   : %d %s\n", AirSpy.linearity_gain, AirSpy.linearity_gain < 0 ? "(not set)": "");
+    fprintf(stderr, "linearity_gain   : %d %s\n", AirSpy.linearity_gain,
+        AirSpy.linearity_gain < 0 ? "(not set)": (AirSpy.linearity_gain * 10 == Modes.gain ? "(from --gain)" :""));
     fprintf(stderr, "sensitivity_gain : %d %s\n", AirSpy.sensitivity_gain, AirSpy.sensitivity_gain < 0 ? "(not set)": "");
     fprintf(stderr, "\n");
     fprintf(stderr, "lna_agc    : %s\n", AirSpy.lna_agc ? "on" : "off");
@@ -182,14 +231,17 @@ static void show_config()
     fprintf(stderr, "rf_bias    : %s\n", AirSpy.rf_bias ? "on" : "off");
 }
 
-#define SET_PARAM(__name) \
-    status = airspy_set_ ## __name(AirSpy.device, AirSpy.__name); \
+#define SET_PARAM_VAL(__name, __val) \
+    status = airspy_set_ ## __name(AirSpy.device, __val); \
     if (status != 0) { \
         fprintf(stderr, "AirSpy: airspy_set_" #__name " failed with code %d\n", status); \
         airspy_close(AirSpy.device); \
         airspy_exit(); \
         return false; \
     }
+
+#define SET_PARAM(__name) \
+    SET_PARAM_VAL(__name, AirSpy.__name)
 
 #define SET_PARAM_GAIN(__name) \
     if (AirSpy.__name >= 0) { \
@@ -226,9 +278,7 @@ bool airspyOpen()
             return false;
         }
         AirSpy.preset_gains_set++;
-        fprintf(stderr, "AirSpy: --linearity-gain set to %d from --gain\n", AirSpy.linearity_gain);
     }
-
 
     if (AirSpy.individual_gains_set && AirSpy.preset_gains_set) {
         fprintf(stderr, "AirSpy: Individual gains can't be combined with preset gains\n");
@@ -268,7 +318,7 @@ bool airspyOpen()
         return false;
     }
 
-    SET_PARAM(freq);
+    AirSpy.sample_ratio = AirSpy.samplerate / Modes.sample_rate;
 
     SET_PARAM_GAIN(lna_gain);
     SET_PARAM_GAIN(mixer_gain);
@@ -282,12 +332,12 @@ bool airspyOpen()
     SET_PARAM(rf_bias);
     SET_PARAM(packing);
 
-    SET_PARAM(sample_type);
+    SET_PARAM_VAL(sample_type, sample_setups[AirSpy.sample_setup].airspy_sample_type);
     SET_PARAM(samplerate);
 
     show_config();
 
-    AirSpy.converter = init_converter(CONVERTER_SAMPLE_TYPE,
+    AirSpy.converter = init_converter(sample_setups[AirSpy.sample_setup].internal_converter,
                                       Modes.sample_rate,
                                       Modes.dc_filter,
                                       &AirSpy.converter_state);
@@ -301,24 +351,42 @@ bool airspyOpen()
 
 static int handle_airspy_samples(airspy_transfer *transfer)
 {
-    static uint64_t dropped = 0;
-    static uint64_t sampleCounter = 0;
 
     sdrMonitor();
 
     if (Modes.exit || transfer->sample_count <= 0)
         return -1;
 
-    struct iq_sample *buf = transfer->samples;
-    int sample_ratio = AirSpy.samplerate / Modes.sample_rate;
-    uint64_t sample_count = transfer->sample_count / sample_ratio;
+    static uint64_t dropped = 0;
+    static uint64_t sampleCounter = 0;
     dropped += transfer->dropped_samples;
 
-//    printf("Sample Count: %d  Sample ratio: %d  Dropped: %lu\n", (int)sample_count, sample_ratio, transfer->dropped_samples);
+    uint64_t sample_count = (transfer->sample_count / AirSpy.sample_ratio);
+    FIRFilterContextInt16 __attribute__ ((unused))ctx;
 
-    for (uint32_t i=0, j=0; i < sample_count; i++, j+=sample_ratio) {
-        buf[i] = buf[j];
+    switch(transfer->sample_type) {
+    case AIRSPY_SAMPLE_FLOAT32_IQ:
+        break;
+    case AIRSPY_SAMPLE_FLOAT32_REAL:
+        break;
+    case AIRSPY_SAMPLE_INT16_IQ:
+        DecimateInt16IQ((struct iq_int_sample *)transfer->samples, transfer->sample_count, AirSpy.sample_ratio);
+        break;
+    case AIRSPY_SAMPLE_INT16_REAL:
+
+        ctx.filter = &fir_12_19_int;
+        FIRFilterInitInt16(&ctx);
+        FIRFilterProcessInt16Buffer(&ctx, (int16_t *)transfer->samples, transfer->sample_count, AirSpy.sample_ratio);
+        FIRFilterFreeInt16(&ctx);
+
+        break;
+    case AIRSPY_SAMPLE_UINT16_REAL:
+    case AIRSPY_SAMPLE_RAW:
+        break;
+    default:
+        ;
     }
+
 
     struct mag_buf *outbuf = fifo_acquire(0 /* don't wait */);
     if (!outbuf) {
@@ -350,12 +418,11 @@ static int handle_airspy_samples(airspy_transfer *transfer)
     unsigned to_convert = sample_count;
     if (to_convert + outbuf->overlap > outbuf->totalLength) {
         // how did that happen?
-        printf("WTF\n");
         to_convert = outbuf->totalLength - outbuf->overlap;
         dropped = sample_count - to_convert;
     }
 
-    AirSpy.converter(buf, &outbuf->data[outbuf->overlap], to_convert,
+    AirSpy.converter(transfer->samples, &outbuf->data[outbuf->overlap], to_convert,
         AirSpy.converter_state, &outbuf->mean_level, &outbuf->mean_power);
     outbuf->validLength = outbuf->overlap + to_convert;
 
@@ -365,6 +432,15 @@ static int handle_airspy_samples(airspy_transfer *transfer)
     return 0;
 }
 
+void airspyClose()
+{
+    if (AirSpy.device) {
+        airspy_stop_rx(AirSpy.device);
+        airspy_close(AirSpy.device);
+        airspy_exit();
+        AirSpy.device = NULL;
+    }
+}
 
 void airspyRun()
 {
@@ -377,9 +453,15 @@ void airspyRun()
 
     if (status != 0) { 
         fprintf(stderr, "airspy_start_rx failed\n");
-        airspy_close(AirSpy.device);
-        airspy_exit();
+        airspyClose();
         exit (1); 
+    }
+
+    status = airspy_set_freq(AirSpy.device, AirSpy.freq);
+    if (status != 0) {
+        fprintf(stderr, "airspy_set_freq failed\n");
+        airspyClose();
+        exit (1);
     }
 
     // airspy_start_rx does not block so we need to wait until the streaming is finished
@@ -393,12 +475,3 @@ void airspyRun()
     fprintf(stderr, "AirSpy stopped streaming\n");
 }
 
-void airspyClose()
-{
-    if (AirSpy.device) {
-        airspy_stop_rx(AirSpy.device);
-        airspy_close(AirSpy.device);
-        airspy_exit();
-        AirSpy.device = NULL;
-    }
-}

@@ -253,6 +253,142 @@ static void convert_sc16_nodc(void *iq_data,
     }
 }
 
+static void convert_int16_nodc(void *iq_data,
+                              uint16_t *mag_data,
+                              unsigned nsamples,
+                              struct converter_state *state,
+                              double *out_mean_level,
+                              double *out_mean_power)
+{
+    MODES_NOTUSED(state);
+    MODES_NOTUSED(out_mean_power);
+
+    int16_t *in = iq_data;
+
+    unsigned i;
+    uint64_t sum_level = 0;
+
+    for (i = 0; i < nsamples; ++i) {
+        int16_t mag = *in++ ;
+
+        sum_level += mag;
+        *mag_data++ = (uint16_t)mag;
+    }
+
+    if (out_mean_level) {
+        *out_mean_level = sum_level / nsamples;
+    }
+}
+
+/* This is currently broken */
+static void convert_uint16_nodc(void *iq_data,
+                              uint16_t *mag_data,
+                              unsigned nsamples,
+                              struct converter_state *state,
+                              double *out_mean_level,
+                              double *out_mean_power)
+{
+    MODES_NOTUSED(state);
+    MODES_NOTUSED(out_mean_power);
+
+    uint16_t *in = iq_data;
+
+    unsigned i;
+    uint64_t sum_level = 0;
+
+    for (i = 0; i < nsamples; ++i) {
+        uint16_t I = *in++ ;
+        int16_t amp;
+        int16_t mag;
+
+        amp = (I >> 4) + 2048;
+
+        if (amp < 0) {
+            mag = -amp;
+        } else {
+            mag = amp;
+        }
+
+        sum_level += mag;
+        *mag_data++ = (uint16_t)amp;
+    }
+
+    if (out_mean_level) {
+        *out_mean_level = sum_level / nsamples;
+    }
+}
+
+static void convert_float32_nodc(void *iq_data,
+                              uint16_t *mag_data,
+                              unsigned nsamples,
+                              struct converter_state *state,
+                              double *out_mean_level,
+                              double *out_mean_power)
+{
+    MODES_NOTUSED(state);
+    MODES_NOTUSED(out_mean_power);
+
+    float *in = iq_data;
+
+    unsigned i;
+    uint64_t sum_level = 0;
+
+    for (i = 0; i < nsamples; ++i) {
+        float F = *in++ ;
+        uint16_t mag;
+
+        mag = F * 65535.0f + 0.5f;
+
+        sum_level += mag;
+        *mag_data++ = (uint16_t)mag;
+    }
+
+    if (out_mean_level) {
+        *out_mean_level = sum_level / nsamples;
+    }
+}
+
+static void convert_scfloat32_nodc(void *iq_data,
+                              uint16_t *mag_data,
+                              unsigned nsamples,
+                              struct converter_state *state,
+                              double *out_mean_level,
+                              double *out_mean_power)
+{
+    MODES_NOTUSED(state);
+
+    float *in = iq_data;
+
+    unsigned i;
+    float I, Q;
+    float fI, fQ, magsq;
+    float sum_level = 0, sum_power = 0;
+
+    for (i = 0; i < nsamples; ++i) {
+        I = *in++;
+        Q = *in++;
+        fI = I;
+        fQ = Q;
+
+        magsq = fI * fI + fQ * fQ;
+        if (magsq > 1)
+            magsq = 1;
+
+        float mag = sqrtf(magsq);
+        sum_power += magsq;
+        sum_level += mag;
+        *mag_data++ = (uint16_t)(mag * 65535.0f + 0.5f);
+    }
+
+    if (out_mean_level) {
+        *out_mean_level = sum_level / nsamples;
+    }
+
+    if (out_mean_power) {
+        *out_mean_power = sum_power / nsamples;
+    }
+}
+
 // SC16Q11_TABLE_BITS controls the size of the lookup table
 // for SC16Q11 data. The size of the table is 2 * (1 << (2*BITS))
 // bytes. Reducing the number of bits reduces precision but
@@ -444,6 +580,10 @@ static struct {
     { INPUT_SC16Q11,      0, convert_sc16q11_nodc,     "SC16Q11, float path, no DC", NULL },
 #endif
     { INPUT_SC16Q11,      1, convert_sc16q11_generic,  "SC16Q11, float path", NULL },
+    { INPUT_SCFLOAT32,    0, convert_scfloat32_nodc,      "FLOAT32, float, no DC", NULL },
+    { INPUT_FLOAT32,      0, convert_float32_nodc,      "FLOAT32, float, no DC", NULL },
+    { INPUT_INT16,        0, convert_int16_nodc,       "INT16, int, no DC", NULL },
+    { INPUT_UINT16,       0, convert_uint16_nodc,      "UINT16, int, no DC", NULL },
     { 0, 0, NULL, NULL, NULL }
 };
 
@@ -453,6 +593,8 @@ iq_convert_fn init_converter(input_format_t format,
                              struct converter_state **out_state)
 {
     int i;
+
+    init_uc8_lookup();
 
     for (i = 0; converters_table[i].fn; ++i) {
         if (converters_table[i].format != format)
