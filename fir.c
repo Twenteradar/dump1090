@@ -19,60 +19,177 @@
 
 #include "fir.h"
 
+/*!
+ * Context for int16 samples
+ *
+ */
+struct FIRFilterContextInt16 {
+    /*! The filter template to use */
+    struct FIRFilterInt16 *filter;
+    /*! Working variable to keep track of current history slot */
+    uint32_t index;
+    /*! If decimation factor is 0, no decimation is done */
+    uint32_t decimation_factor;
+    /*! Pointer to a function that will process a buffer */
+    void (*processBuffer)(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count);
+    /*! Pointer to a function that will process one sample */
+    void (*processOne)(struct FIRFilterContextInt16 *ctx, int16_t *in);
+    /*! The sample history */
+    int16_t history[];
+};
 
-void FIRFilterInitInt16(FIRFilterContextInt16 *ctx)
+
+
+struct FIRFilterContextInt16 *FIRFilterCreateInt16Ctx(struct FIRFilterInt16 *filter, uint32_t decimation_factor)
 {
-  ctx->history = calloc(ctx->filter->tapCount, sizeof(*ctx->history));
-  ctx->index = 0;
-}
+    struct FIRFilterContextInt16 *ctx = calloc(1, sizeof(*ctx) + (sizeof(int16_t) * filter->tapCount));
 
-int16_t  FIRFilterProcessInt16(FIRFilterContextInt16 *ctx, int64_t in)
-{
-    uint32_t i;
-    uint32_t index = ctx->index;
-    int64_t sum = 0;
-
-    ctx->history[index] = ABS(in);
-
-    for(i = 0; i < ctx->filter->tapCount; ++i) {
-      index = index != 0 ? index-1 : ctx->filter->tapCount - 1;
-      sum += (int64_t)ctx->history[index] * ctx->filter->taps[i];
-    };
-
-    if (++ctx->index == ctx->filter->tapCount) {
-        ctx->index = 0;
+    ctx->filter = filter;
+    ctx->index = 0;
+    ctx->decimation_factor = decimation_factor;
+    /*
+     * The functions are determined here to remove tests during actual processing
+     */
+    if (decimation_factor) {
+        ctx->processBuffer = filter->processDecimateBuffer;
+    } else {
+        ctx->processBuffer = filter->processBuffer;
     }
 
-    return sum >> 16;
+    return ctx;
 }
 
-void FIRFilterProcessInt16Buffer(FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count,
-    uint32_t decimation_factor)
+void FIRFilterResetInt16(struct FIRFilterContextInt16 *ctx)
+{
+    uint32_t i;
+
+    ctx->index = 0;
+    for (i = 0; i < ctx->filter->tapCount; i++) {
+        ctx->history[i] = 0;
+    }
+}
+
+void FIRFilterFreeInt16(struct FIRFilterContextInt16 *ctx)
+{
+    if (ctx) {
+        free(ctx);
+    }
+}
+
+/*
+ * These 2 macros can be used for the 4 fast/slow functions.
+ */
+#define __FIRFilterProcessInt16Slow(__ctx, __in, __tapTable) \
+({\
+    uint32_t __i; \
+    uint32_t __index = __ctx->index; \
+    int64_t __sum = 0; \
+    __ctx->history[__index] = ABS(__in); \
+    for(__i = 0; __i < __ctx->filter->tapCount; ++__i) { \
+      __index = __index != 0 ? __index-1 : __ctx->filter->tapCount - 1; \
+      __sum += (int64_t)(__ctx->history[__index] * __tapTable[__i]); \
+    }; \
+    if (++__ctx->index == __ctx->filter->tapCount) { \
+        __ctx->index = 0; \
+    } \
+    (__sum >> __ctx->filter->shiftCount); \
+})
+
+#define __FIRFilterProcessInt16Fast(__ctx, __in, __tapTable) \
+({ \
+    uint32_t __i; \
+    uint32_t __index = __ctx->index++; \
+    int64_t __sum = 0; \
+    __ctx->history[(__index) & __ctx->filter->indexMask] = ABS(__in); \
+    for(__i = 0; __i < __ctx->filter->tapCount; ++__i) { \
+      __sum += (int64_t)__ctx->history[(__index--) & __ctx->filter->indexMask] * __tapTable[__i]; \
+    }; \
+    (__sum >> __ctx->filter->shiftCount); \
+})
+
+inline int16_t FIRFilterProcessInt16Int16TapsSlow(struct FIRFilterContextInt16 *ctx, int16_t in)
+{
+    return __FIRFilterProcessInt16Slow(ctx, in, ctx->filter->intTaps);
+}
+
+inline int16_t FIRFilterProcessInt16Int16TapsFast(struct FIRFilterContextInt16 *ctx, int16_t in)
+{
+    return __FIRFilterProcessInt16Fast(ctx, in, ctx->filter->intTaps);
+}
+
+inline int16_t FIRFilterProcessInt16FloatTapsSlow(struct FIRFilterContextInt16 *ctx, int16_t in)
+{
+    return __FIRFilterProcessInt16Slow(ctx, in, ctx->filter->floatTaps);
+}
+
+inline int16_t FIRFilterProcessInt16FloatTapsFast(struct FIRFilterContextInt16 *ctx, int16_t in)
+{
+    return __FIRFilterProcessInt16Fast(ctx, in, ctx->filter->floatTaps);
+}
+
+/*
+ * This is the shift-only implementation inspired by @prog
+ */
+inline int16_t FIRFilterProcessInt16Int16TapsShifter(struct FIRFilterContextInt16 *__ctx, int16_t __in)
+{
+    uint32_t __i;
+    uint32_t __index = __ctx->index;
+    int64_t __sum = 0;
+    __ctx->history[__index] = ABS(__in);
+    for(__i = 0; __i < __ctx->filter->tapCount; ++__i) {
+      __index = __index != 0 ? __index-1 : __ctx->filter->tapCount - 1;
+      __sum += (int64_t)(__ctx->history[__ctx->filter->shiftIndexes[__index]] << __ctx->filter->intTaps[__i]);
+    };
+    if (++__ctx->index == __ctx->filter->tapCount) {
+        __ctx->index = 0;
+    }
+    return (__sum >> __ctx->filter->shiftCount);
+
+}
+
+/*
+ * To decimate or not to decimate, that is the question.
+ */
+void FIRFilterNoDecProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count)
+{
+    uint32_t i;
+
+    for (i = 0; i < sample_count; i++) {
+        in[i] = ctx->filter->processOne(ctx, in[i]);
+    }
+}
+
+void FIRFilterDecimatorProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count)
 {
     uint32_t i, j, k;
     int16_t temp;
 
-    for (i = 0, j = 0, k = (decimation_factor - 1); i < sample_count; i++) {
-        temp = FIRFilterProcessInt16(ctx, in[i]);
-        if (decimation_factor) {
-            if (k == (decimation_factor - 1)) {
-                in[j++] = temp;
-            } else if (k == 0) {
-                k = decimation_factor;
-            }
-            k--;
-        } else {
-            in[i] = temp;
+    for (i = 0, j = 0, k = (ctx->decimation_factor - 1); i < sample_count; i++) {
+        temp = ctx->filter->processOne(ctx, in[i]);
+        /*
+         * We do the decimation in-line so we don't have to iterate over the entire buffer
+         * again to pick out teh samples we want to keep.
+         */
+        if (k == (ctx->decimation_factor - 1)) {
+            in[j++] = temp;
+        } else if (k == 0) {
+            k = ctx->decimation_factor;
         }
-
+        k--;
     }
 }
 
-void FIRFilterFreeInt16(FIRFilterContextInt16 *ctx)
+/*
+ * The public function for processing a buffer
+ */
+void FIRFilterProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count)
 {
-    free(ctx->history);
+    ctx->processBuffer(ctx, in, sample_count);
 }
 
+/*
+ * Standalone decimators.
+ */
 void DecimateInt16(int16_t *in, size_t sample_count, uint32_t decimation_factor)
 {
     size_t i, j;
@@ -102,9 +219,8 @@ void DecimateInt16MaxMAG(int16_t *in, size_t sample_count, uint32_t decimation_f
     }
 }
 
-char *print16(int16_t val, char *buf)
+static char __attribute__((unused)) *print16(int16_t val, char *buf)
 {
-
     for (int i = 0; i<16; i++) {
         unsigned int m = 1 << i;
         buf[15-i] = val & m ? '1' : '0';

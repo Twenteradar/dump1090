@@ -78,6 +78,8 @@ static struct {
     struct converter_state *converter_state;
 } AirSpy;
 
+struct FIRFilterContextInt16 __attribute__ ((unused)) *ctx;
+
 void airspyInitConfig()
 {
     AirSpy.device = NULL;
@@ -346,6 +348,8 @@ bool airspyOpen()
         return false;
     }
 
+    ctx = FIRFilterCreateInt16Ctx(&fir_const_5_int, AirSpy.sample_ratio);
+
     return true;
 }
 
@@ -362,7 +366,6 @@ static int handle_airspy_samples(airspy_transfer *transfer)
     dropped += transfer->dropped_samples;
 
     uint64_t sample_count = (transfer->sample_count / AirSpy.sample_ratio);
-    FIRFilterContextInt16 __attribute__ ((unused))ctx;
 
     switch(transfer->sample_type) {
     case AIRSPY_SAMPLE_FLOAT32_IQ:
@@ -374,10 +377,8 @@ static int handle_airspy_samples(airspy_transfer *transfer)
         break;
     case AIRSPY_SAMPLE_INT16_REAL:
 
-        ctx.filter = &fir_12_19_int;
-        FIRFilterInitInt16(&ctx);
-        FIRFilterProcessInt16Buffer(&ctx, (int16_t *)transfer->samples, transfer->sample_count, AirSpy.sample_ratio);
-        FIRFilterFreeInt16(&ctx);
+        FIRFilterProcessInt16Buffer(ctx, (int16_t *)transfer->samples, transfer->sample_count);
+//        DecimateInt16AverageMAGThreshold((int16_t *)transfer->samples, transfer->sample_count, AirSpy.sample_ratio, 0);
 
         break;
     case AIRSPY_SAMPLE_UINT16_REAL:
@@ -440,6 +441,8 @@ void airspyClose()
         airspy_exit();
         AirSpy.device = NULL;
     }
+    FIRFilterFreeInt16(ctx);
+    ctx = NULL;
 }
 
 void airspyRun()

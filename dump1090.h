@@ -262,7 +262,6 @@ typedef enum {
 #include "net_io.h"
 #include "crc.h"
 #include "demod_2400.h"
-#include "demod_2500.h"
 #include "stats.h"
 #include "cpr.h"
 #include "icao_filter.h"
