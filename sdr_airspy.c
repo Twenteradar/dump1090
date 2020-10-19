@@ -76,6 +76,7 @@ static struct {
     enum sample_setup_type sample_setup;
     iq_convert_fn converter;
     struct converter_state *converter_state;
+    const char *filter_name;
 } AirSpy;
 
 struct FIRFilterContextInt16 __attribute__ ((unused)) *ctx;
@@ -101,6 +102,7 @@ void airspyInitConfig()
     AirSpy.converter = NULL;
     AirSpy.converter_state = NULL;
     AirSpy.sample_setup = SETUP_INT16_IQ;
+    AirSpy.filter_name = FIRFilters[0]->name;
 }
 
 bool airspyHandleOption(int argc, char **argv, int *jptr)
@@ -167,6 +169,16 @@ bool airspyHandleOption(int argc, char **argv, int *jptr)
             fprintf(stderr, "Error: --sample-setup '%s' is not valid\n", setup);
             return false;
         }
+    } else if (!strcmp(argv[j], "--sample-filter")) {
+        char *filter_name = argv[++j];
+        if (!FIRFindFilter(filter_name)) {
+            char *names = FIRFiltersGetNames();
+            fprintf(stderr, "Error: Sample-filter '%s' is not valid.  Valid filter names are:\n", filter_name);
+            fprintf(stderr, "%s\n", names);
+            free(names);
+            return false;
+        }
+        AirSpy.filter_name = filter_name;
     } else if (!strcmp(argv[j], "--enable-lna-agc")) {
         AirSpy.lna_agc = 1;
         AirSpy.agcs_set++;
@@ -203,6 +215,10 @@ void airspyShowHelp()
     printf("                          mutually exclusive with all other gain settings\n");
     printf("--sample-setup            set sample type.  one of\n");
     printf("                          'float32_iq', 'float32_real', 'int16_iq', 'int16_real', 'uint16_real'\n");
+    printf("--sample-filter           set sample filter.  one of\n");
+    char *names = FIRFiltersGetNames();
+    printf("                          %s Default: %s\n", names, FIRFilters[0]->name);
+    free(names);
     printf("--sample-rate             set sample rate in Hz (default 12000000 samples /sec\n");
     printf("                          not all sample rates are support every sample-setup\n");
     printf("--enable-lna-agc          enable on lna agc\n");
@@ -219,6 +235,7 @@ static void show_config()
     fprintf(stderr, "sample-rate      : %d\n", AirSpy.samplerate);
     fprintf(stderr, "downsample ratio : %d\n", AirSpy.sample_ratio);
     fprintf(stderr, "sample-setup     : %s\n", sample_setups[AirSpy.sample_setup].name);
+    fprintf(stderr, "sample-filter    : %s\n", AirSpy.filter_name);
     fprintf(stderr, "\n");
     fprintf(stderr, "lna_gain         : %d %s\n", AirSpy.lna_gain, AirSpy.lna_gain < 0 ? "(not set)": "");
     fprintf(stderr, "mixer_gain       : %d %s\n", AirSpy.mixer_gain, AirSpy.mixer_gain < 0 ? "(not set)": "");
@@ -348,7 +365,7 @@ bool airspyOpen()
         return false;
     }
 
-    ctx = FIRFilterCreateInt16Ctx(&fir_const_5_int, AirSpy.sample_ratio);
+    ctx = FIRFilterCreateInt16Ctx(AirSpy.filter_name, AirSpy.sample_ratio);
 
     return true;
 }

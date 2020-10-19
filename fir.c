@@ -38,12 +38,50 @@ struct FIRFilterContextInt16 {
     int16_t history[];
 };
 
-
-
-struct FIRFilterContextInt16 *FIRFilterCreateInt16Ctx(struct FIRFilterInt16 *filter, uint32_t decimation_factor)
+size_t FIRFiltersGetCount()
 {
-    struct FIRFilterContextInt16 *ctx = calloc(1, sizeof(*ctx) + (sizeof(int16_t) * filter->tapCount));
+    return sizeof(FIRFilters) / sizeof(*FIRFilters);
+}
 
+char *FIRFiltersGetNames()
+{
+    size_t count = FIRFiltersGetCount();
+    uint32_t i;
+    uint32_t needed = (count * (FILTER_MAX_NAME_LEN + 1 /* ", " */)) + 1;
+    char *names = malloc(needed);
+    char *ptr = names;
+
+    for (i = 0; i < count; i++) {
+        int c = sprintf(ptr, "%s%s", (i == 0 ? "" : ", "),  FIRFilters[i]->name);
+        ptr += c;
+    }
+    return names;
+}
+
+struct FIRFilterInt16 *FIRFindFilter(const char *filterName)
+{
+    uint32_t i;
+    uint32_t filter_count = sizeof(FIRFilters) / sizeof(*FIRFilters);
+
+    for (i = 0; i < filter_count; i++) {
+        if (strcasecmp(FIRFilters[i]->name, filterName) == 0) {
+            return FIRFilters[i];
+        }
+    }
+
+    return NULL;
+}
+
+struct FIRFilterContextInt16 *FIRFilterCreateInt16Ctx(const char *filterName, uint32_t decimation_factor)
+{
+    struct FIRFilterContextInt16 *ctx;
+    struct FIRFilterInt16 *filter = FIRFindFilter(filterName);
+
+    if (filter == NULL) {
+        return NULL;
+    }
+
+    ctx = calloc(1, sizeof(*ctx) + (sizeof(int16_t) * filter->tapCount));
     ctx->filter = filter;
     ctx->index = 0;
     ctx->decimation_factor = decimation_factor;
@@ -179,6 +217,30 @@ void FIRFilterDecimatorProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int
     }
 }
 
+static char __attribute__((unused)) *print16(int16_t val, char *buf)
+{
+    for (int i = 0; i<16; i++) {
+        unsigned int m = 1 << i;
+        buf[15-i] = val & m ? '1' : '0';
+    }
+    buf[16] = '\0';
+    return buf;
+}
+
+
+void FIRFilterAverageDecimatorInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count)
+{
+    uint32_t i, j, k;
+
+    for (i = 0, j = 0; i < sample_count && j < sample_count; i++) {
+        uint64_t temp = 0;
+        for (k = 0; k < ctx->decimation_factor; j++, k++) {
+            temp += ABS(in[j]);
+        }
+        in[i] = temp / ctx->decimation_factor;
+    }
+}
+
 /*
  * The public function for processing a buffer
  */
@@ -217,16 +279,6 @@ void DecimateInt16MaxMAG(int16_t *in, size_t sample_count, uint32_t decimation_f
             in[i] = jtemp > itemp ? jtemp : itemp;
         }
     }
-}
-
-static char __attribute__((unused)) *print16(int16_t val, char *buf)
-{
-    for (int i = 0; i<16; i++) {
-        unsigned int m = 1 << i;
-        buf[15-i] = val & m ? '1' : '0';
-    }
-    buf[16] = '\0';
-    return buf;
 }
 
 

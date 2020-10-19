@@ -49,8 +49,11 @@ enum FIRFilterTapType {
     TAP_TYPE_FLOAT,
 };
 
+#define FILTER_MAX_NAME_LEN 33
+
 /*! int16 Sample Filter Definition */
 struct FIRFilterInt16 {
+    const char name[FILTER_MAX_NAME_LEN];
     /*! The following fields are informational only */
     const char *description;
     uint64_t sampleRateHz;
@@ -88,7 +91,7 @@ struct FIRFilterInt16 {
  * @param decimation_factor If decimating/downsampling, the factor.
  * @return struct FIRFilterContextInt16 *
  */
-struct FIRFilterContextInt16 *FIRFilterCreateInt16Ctx(struct FIRFilterInt16 *filter, uint32_t decimation_factor);
+struct FIRFilterContextInt16 *FIRFilterCreateInt16Ctx(const char *filterName, uint32_t decimation_factor);
 
 /*!
  * @brief Resets the context history and index
@@ -213,6 +216,8 @@ void FIRFilterNoDecProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t
  */
 void FIRFilterDecimatorProcessInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count);
 
+void FIRFilterAverageDecimatorInt16Buffer(struct FIRFilterContextInt16 *ctx, int16_t *in, size_t sample_count);
+
 /*
  * The public buffer processing function
  */
@@ -281,6 +286,7 @@ void DecimateInt16AverageMAGThreshold(int16_t *in, size_t sample_count, uint32_t
  */
 
 static struct FIRFilterInt16 __attribute__((unused)) fir_12_19_tf1_int = {
+    .name = "t-filter-19",
     .description = "http://t-filter.engineerjs.com/",
     .sampleRateHz = 12000000,
     .cutoffStartFreqHz = 1100000,
@@ -315,6 +321,7 @@ static struct FIRFilterInt16 __attribute__((unused)) fir_12_19_tf1_int = {
 };
 
 static struct FIRFilterInt16 __attribute__((unused)) fir_const_5_int = {
+    .name = "5tap-constant",
     .description = "custom",
     .sampleRateHz = 0,
     .cutoffStartFreqHz = 0,
@@ -336,6 +343,7 @@ static struct FIRFilterInt16 __attribute__((unused)) fir_const_5_int = {
 };
 
 static struct FIRFilterInt16 __attribute__((unused)) fir_shifter_5_int = {
+    .name = "5tap-shifter",
     .description = "custom",
     .sampleRateHz = 0,
     .cutoffStartFreqHz = 0,
@@ -355,6 +363,7 @@ static struct FIRFilterInt16 __attribute__((unused)) fir_shifter_5_int = {
 };
 
 static struct FIRFilterInt16 __attribute__((unused)) fir_12_16_tf3_int = {
+    .name = "t-filter-16",
     .description = "http://t-filter.engineerjs.com/",
     .sampleRateHz = 12000000,
     .cutoffStartFreqHz = 1200000,
@@ -385,6 +394,16 @@ static struct FIRFilterInt16 __attribute__((unused)) fir_12_16_tf3_int = {
         -4057
     }
 };
+
+static struct FIRFilterInt16 __attribute__((unused)) fir_average_5_int = {
+    .name = "5tap-average",
+    .description = "custom",
+    .sampleRateHz = 0,
+    .cutoffStartFreqHz = 0,
+    .cutoffEndFreqHz = 0,
+    .processDecimateBuffer = FIRFilterAverageDecimatorInt16Buffer,
+};
+
 
 #if 0
 /* These are crap but kept to keep track of what I've already tried. */
@@ -435,6 +454,28 @@ static struct FIRFilterInt16 __attribute__((unused)) fir_12_16_ml2_int = {
 };
 
 #endif
+
+
+static struct FIRFilterInt16 __attribute__((unused)) *FIRFilters[] = {
+    &fir_average_5_int,
+    &fir_const_5_int,
+    &fir_12_19_tf1_int,
+    &fir_shifter_5_int,
+    &fir_12_16_tf3_int,
+};
+
+struct FIRFilterInt16 *FIRFindFilter(const char *name);
+size_t FIRFiltersGetCount();
+
+/*!
+ * @brief Get a comma separate list of available filters
+ * @return
+ *
+ * You must call free() on the returned string.
+ */
+char *FIRFiltersGetNames();
+
+
 
 #ifdef __cplusplus
 } // __cplusplus defined.
